@@ -1,0 +1,35 @@
+# Secrets — never commit
+token.env
+.env
+*.token
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Generated output (re-create with src.pqc_pipeline / src.full_benchmark)
+results/
+*.log
+
+# Local documents and scans
+documentation/
+*.pdf
+
+# Bauman chip artifacts: calibration JSONs are tracked,
+# raw per-job run dumps and media are not
+Bauman/runs/
+Bauman/*.png
+Bauman/*.ipynb
+Bauman/*.cache

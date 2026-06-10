@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qccb"
+version = "2.0.0"
+description = "Quantum Computing Cryptography Benchmark — PQC performance and NISQ-hardware measurement framework"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Amir Zhailin" },
+]
+dependencies = [
+    "numpy>=1.26.0",
+    "pandas>=2.1.0",
+    "scipy>=1.11.0",
+    "matplotlib>=3.8.0",
+    "PyYAML>=6.0.1",
+    "cryptography>=41.0.0",
+    "pycryptodome>=3.19.0",
+    "qiskit>=1.0.0",
+    "qiskit-aer>=0.13.0",
+    "tqdm>=4.66.0",
+    "psutil>=5.9.0",
+    "GPUtil>=1.4.0",
+    "pillow>=10.0.0",
+]
+
+[project.optional-dependencies]
+# Real liboqs bindings; when absent the framework falls back to the
+# built-in PQC simulator (QCCB_FORCE_SIMULATOR=1).
+oqs = ["liboqs-python>=0.9.0"]
+# CUDA state-vector acceleration for the GPU backend.
+gpu = [
+    "cupy-cuda12x",
+    "nvidia-cublas-cu12",
+    "nvidia-cuda-runtime-cu12",
+    "nvidia-cuda-nvrtc-cu12",
+    "nvidia-nvjitlink-cu12",
+]
+# Bauman Octillion client (separate package index — see README).
+octillion = ["octillion_client"]
+
+[tool.setuptools]
+packages = [
+    "src",
+    "src.experiments",
+]

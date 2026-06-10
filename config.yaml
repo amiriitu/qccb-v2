@@ -1,0 +1,178 @@
+# ============================================================================
+# QCCB v2.0 - Quantum Computing Cryptography Benchmark (Scientific Edition)
+# Configuration File for Master's Thesis Research
+# ============================================================================
+
+project:
+  name: "QCCB v2.0"
+  version: "2.0.0"
+  author: "Amir"
+  thesis_title: "Data Protection in Quantum Computing Context: Cryptography Resilience Study"
+  institution: ""
+  date: "2026"
+
+# Statistical Protocol Configuration
+statistics:
+  warmup_iterations: 20          # Excluded from analysis
+  benchmark_iterations: 2000     # Included in statistics (increased for full CPU load)
+  outlier_sigma: 3.0             # ±3σ rule for outlier removal
+  confidence_level: 0.95         # 95% confidence interval
+  random_seed: 42                # For reproducibility
+
+# Quantum Threat Simulation
+quantum_threat:
+  enabled: true
+  # Per dissertation §3.8 Table 6: {15, 21, 35, 77, 143}
+  numbers_to_factor: [15, 21, 35, 77, 143]
+  use_gpu: false                 # Set true if cuQuantum available
+  max_qubits: 20                 # Limit for consumer hardware
+  threat_timeline:
+    rsa_2048_break_year_optimistic: 2027
+    rsa_2048_break_year_pessimistic: 2039
+    current_year: 2026
+
+# PQC Algorithms to Benchmark
+pqc_algorithms:
+  kem:
+    # Lattice-based — NIST FIPS 203 (ML-KEM)
+    - name: "Kyber512"
+      nist_level: 1
+      family: "lattice"
+    - name: "Kyber768"
+      nist_level: 3
+      family: "lattice"
+    - name: "Kyber1024"
+      nist_level: 5
+      family: "lattice"
+    # Code-based — NIST round 4 (Classic McEliece, HQC)
+    - name: "Classic-McEliece-348864"
+      nist_level: 1
+      family: "code-based"
+    - name: "HQC-128"
+      nist_level: 1
+      family: "code-based"
+    - name: "HQC-192"
+      nist_level: 3
+      family: "code-based"
+
+  signature:
+    # Lattice-based — NIST FIPS 204 (ML-DSA)
+    - name: "Dilithium2"
+      nist_level: 2
+      family: "lattice"
+    - name: "Dilithium3"
+      nist_level: 3
+      family: "lattice"
+    - name: "Dilithium5"
+      nist_level: 5
+      family: "lattice"
+    # Lattice/NTRU — NIST FIPS 206 draft (FN-DSA / Falcon)
+    - name: "Falcon-512"
+      nist_level: 1
+      family: "lattice-ntru"
+    - name: "Falcon-1024"
+      nist_level: 5
+      family: "lattice-ntru"
+    # Hash-based — NIST FIPS 205 (SLH-DSA)
+    - name: "SPHINCS+-SHA2-128f-simple"
+      nist_level: 1
+      family: "hash-based"
+
+# Classical Algorithms for Comparison
+classical_algorithms:
+  asymmetric:
+    - name: "RSA-2048"
+      key_size: 2048
+    - name: "RSA-4096"
+      key_size: 4096
+    - name: "ECC-P256"
+      curve: "secp256r1"
+    - name: "ECC-P384"
+      curve: "secp384r1"
+  
+  symmetric:
+    - name: "AES-128"
+      key_size: 128
+    - name: "AES-256"
+      key_size: 256
+  
+  hash:
+    - name: "SHA-256"
+      algorithm: "sha256"
+    - name: "SHA3-256"
+      algorithm: "sha3_256"
+
+# Hybrid Scheme Configuration
+hybrid_schemes:
+  enabled: true
+  combinations:
+    - name: "RSA2048+Kyber768"
+      classical: "RSA-2048"
+      pqc: "Kyber768"
+      mode: "parallel"
+
+# Migration Strategy Timeline
+migration:
+  phases:
+    - name: "Assessment"
+      start_year: 2024
+      end_year: 2025
+      budget_percentage: "5-10%"
+      description: "Cryptographic inventory and risk assessment"
+    
+    - name: "Hybrid Deployment"
+      start_year: 2025
+      end_year: 2028
+      budget_percentage: "15-20%"
+      description: "Deploy hybrid RSA+PQC solutions"
+    
+    - name: "Transition"
+      start_year: 2028
+      end_year: 2030
+      budget_percentage: "20-25%"
+      description: "Migrate critical systems to PQC"
+    
+    - name: "Full PQC"
+      start_year: 2030
+      end_year: 2035
+      budget_percentage: "10-15%"
+      description: "Complete PQC migration"
+    
+    - name: "Quantum-Safe Era"
+      start_year: 2035
+      end_year: 2040
+      budget_percentage: "5-10%"
+      description: "Maintenance and updates"
+
+# Visualization Settings
+visualization:
+  dpi: 150
+  figure_width: 12
+  figure_height: 8
+  style: "seaborn-v0_8-whitegrid"
+  color_palette:
+    classical: "#E74C3C"      # Red - vulnerable
+    pqc: "#27AE60"            # Green - quantum-safe
+    hybrid: "#3498DB"         # Blue - transitional
+    warning: "#F39C12"        # Orange - caution
+    safe: "#2ECC71"           # Light green - safe
+
+# Output Configuration
+output:
+  directory: "results"
+  csv_float_precision: 6
+  json_indent: 2
+  image_format: "png"
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+  date_format: "%Y-%m-%dT%H:%M:%S"
+  file: "results/benchmark.log"
+
+# Hardware Detection
+hardware:
+  detect_gpu: true
+  gpu_backend: "cuQuantum"    # or "CPU" for fallback
+  memory_limit_gb: 8

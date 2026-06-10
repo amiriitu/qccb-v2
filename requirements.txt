@@ -1,0 +1,39 @@
+# ============================================================================
+# QCCB v2.0 - Requirements
+# Quantum Computing Cryptography Benchmark (Scientific Edition)
+# ============================================================================
+
+# Core Scientific Stack
+numpy>=1.26.0
+pandas>=2.1.0
+scipy>=1.11.0
+
+# Visualization
+matplotlib>=3.8.0
+
+# Configuration
+PyYAML>=6.0.1
+
+# Cryptographic Libraries
+cryptography>=41.0.0
+pycryptodome>=3.19.0
+
+# Post-Quantum Cryptography (NIST Standard Implementations)
+# Note: liboqs-python requires liboqs C library to be installed
+# Install: pip install liboqs-python
+liboqs-python>=0.9.0
+
+# Quantum Computing Simulation
+# Note: qiskit-aer for GPU requires cuQuantum (optional)
+qiskit>=1.0.0
+qiskit-aer>=0.13.0
+
+# Progress Indicators
+tqdm>=4.66.0
+
+# System Information
+psutil>=5.9.0
+GPUtil>=1.4.0
+
+# Optional: GPU Support (requires CUDA toolkit)
+# cuquantum-python>=23.10.0
