@@ -18,6 +18,7 @@ import queue
 import sys
 from contextlib import suppress
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk, messagebox, filedialog
@@ -47,8 +48,10 @@ from src.experiments.shor_n15 import interpret as shor_interpret
 from src.quantum_hardware import get_client, get_backend, describe_chip
 from src.full_benchmark import run_full_benchmark
 from src.ui_theme import (
-    apply_theme, style_console, style_matplotlib, PALETTE, CHART_COLORS,
+    apply_theme, apply_app_icon, style_console, style_matplotlib,
+    PALETTE, CHART_COLORS,
 )
+from src.csv_preview import render_csv, scan_new_csvs
 
 
 BACKENDS = [
@@ -83,6 +86,13 @@ class QCCBGui:
         self.worker: threading.Thread | None = None
         self.last_results: dict[str, ExperimentResult] = {}
         self.last_benchmark: BenchmarkResult | None = None
+
+        # Live CSV preview state (see _start_preview_watch)
+        self._preview_paths: dict[str, Path] = {}
+        self._preview_state: tuple[Path, float, bool] | None = None
+        self._preview_polling = False
+        self._preview_t0 = 0.0
+        self._last_out_dir: Path | None = None
 
         self.experiment_var = tk.StringVar(value=self.experiment_keys[0])
         self.backend_var = tk.StringVar(value="real")
@@ -414,7 +424,27 @@ class QCCBGui:
     def _build_chart_panel(self, parent) -> ttk.LabelFrame:
         chart_frame = ttk.LabelFrame(parent, text="Results", padding=6)
         chart_frame.columnconfigure(0, weight=1)
-        chart_frame.rowconfigure(0, weight=1)
+        chart_frame.rowconfigure(1, weight=1)
+
+        # Live CSV preview bar: while a pipeline runs, every CSV it writes
+        # shows up in this picker and the newest one is re-drawn natively
+        # on the canvas below (vector-crisp, unlike the old PNG previews).
+        bar = ttk.Frame(chart_frame)
+        bar.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        bar.columnconfigure(1, weight=1)
+        ttk.Label(bar, text="Live CSV preview:",
+                  style="Heading.TLabel").grid(row=0, column=0, sticky="w")
+        self.preview_combo = ttk.Combobox(bar, state="readonly", values=())
+        self.preview_combo.grid(row=0, column=1, sticky="ew", padx=8)
+        self.preview_combo.bind("<<ComboboxSelected>>", self._on_preview_pick)
+        self.follow_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bar, text="Follow latest",
+                        variable=self.follow_var).grid(row=0, column=2,
+                                                       padx=(0, 8))
+        self.open_folder_btn = ttk.Button(bar, text="📂 Open results folder",
+                                          command=self._open_results_folder,
+                                          state="disabled")
+        self.open_folder_btn.grid(row=0, column=3, sticky="e")
 
         # Figsize calibrated for the right-column slot (≈ half the window
         # width after chip+status grow). Matplotlib re-fits on Tk resize.
@@ -422,26 +452,144 @@ class QCCBGui:
         self._draw_empty_chart()
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=chart_frame)
-        self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+        self.canvas.get_tk_widget().grid(row=1, column=0, sticky="nsew")
         toolbar_holder = ttk.Frame(chart_frame)
-        toolbar_holder.grid(row=1, column=0, sticky="ew")
+        toolbar_holder.grid(row=2, column=0, sticky="ew")
         NavigationToolbar2Tk(self.canvas, toolbar_holder)
 
         self.metric_lbl = ttk.Label(chart_frame, text="",
                                     font=("TkDefaultFont", 11, "bold"))
-        self.metric_lbl.grid(row=2, column=0, sticky="w", pady=(4, 0))
+        self.metric_lbl.grid(row=3, column=0, sticky="w", pady=(4, 0))
 
         self.verdict_lbl = ttk.Label(chart_frame, text="",
                                       foreground=PALETTE["success"],
                                       font=("TkDefaultFont", 10, "bold"),
                                       wraplength=900, justify="left")
-        self.verdict_lbl.grid(row=3, column=0, sticky="w", pady=(0, 4))
+        self.verdict_lbl.grid(row=4, column=0, sticky="w", pady=(0, 4))
 
         save_btn = ttk.Button(chart_frame, text="Save report (JSON)…",
                               command=self._save_report)
-        save_btn.grid(row=4, column=0, sticky="e")
+        save_btn.grid(row=5, column=0, sticky="e")
 
         return chart_frame
+
+    # ---------- live CSV preview ----------
+
+    RESULTS_ROOT = PROJECT_ROOT / "results"
+
+    def _start_preview_watch(self):
+        """Follow CSV artifacts of the run that just started.
+
+        The poller lives on the Tk main loop and only does cheap mtime
+        scans; it stops by itself once the worker thread exits.
+        """
+        self._preview_t0 = time.time()
+        # A new run is an unambiguous signal that following is wanted
+        # again, even if the user pinned a CSV manually last time.
+        self.follow_var.set(True)
+        if not self._preview_polling:
+            self._preview_polling = True
+            self.root.after(1500, self._poll_preview)
+
+    def _poll_preview(self):
+        # Liveness FIRST: once the worker exits, the *_done handler picks
+        # the headline chart via _finish_preview, and the poller's last
+        # tick must not override it with whatever CSV happens to be newest.
+        busy = bool(self.worker and self.worker.is_alive())
+        try:
+            fresh = self._register_csvs()
+            if busy and fresh and self.follow_var.get():
+                self._render_csv_preview(fresh[-1])
+        except tk.TclError:
+            busy = False  # widgets are being torn down
+        if busy:
+            self.root.after(1500, self._poll_preview)
+        else:
+            self._preview_polling = False
+
+    def _register_csvs(self) -> list[Path]:
+        """Scan results/ for fresh CSVs and add them to the picker."""
+        if not self._preview_t0:
+            return []
+        fresh = scan_new_csvs(self.RESULTS_ROOT, self._preview_t0)
+        new_names = False
+        for p in fresh:
+            name = f"{p.parent.name} / {p.name}"
+            if name not in self._preview_paths:
+                new_names = True
+            self._preview_paths[name] = p
+        if new_names:
+            self.preview_combo["values"] = list(self._preview_paths)
+        return fresh
+
+    def _render_csv_preview(self, path: Path, announce: bool = False) -> bool:
+        path = Path(path)
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return False
+        state = self._preview_state
+        if not announce and state and state[:2] == (path, mtime):
+            return state[2]
+        try:
+            render_csv(self.fig, path)
+            self.canvas.draw_idle()
+            self._preview_state = (path, mtime, True)
+            name = f"{path.parent.name} / {path.name}"
+            if name in self._preview_paths:
+                self.preview_combo.set(name)
+            return True
+        except Exception as e:
+            # Half-written files are normal while a pipeline is mid-flight;
+            # the next poll retries as soon as the file's mtime moves on.
+            self._preview_state = (path, mtime, False)
+            if announce:
+                self._log(f"(preview {path.name}: {e!r})")
+            return False
+
+    def _on_preview_pick(self, _event=None):
+        path = self._preview_paths.get(self.preview_combo.get())
+        if path is None:
+            return
+        # A manual pick wins over auto-follow, otherwise the next poll
+        # would overwrite the user's choice within two seconds.
+        self.follow_var.set(False)
+        self._render_csv_preview(path, announce=True)
+
+    def _set_out_dir(self, d):
+        if not d:
+            return
+        self._last_out_dir = Path(d)
+        self.open_folder_btn.configure(state="normal")
+
+    def _open_results_folder(self):
+        if self._last_out_dir and self._last_out_dir.exists():
+            import os
+            # AttributeError: os.startfile is Windows-only
+            with suppress(OSError, AttributeError):
+                os.startfile(str(self._last_out_dir))
+        else:
+            self._log("No results folder yet — run a pipeline first.")
+
+    def _finish_preview(self, csv_path, fallback_png=None, title=""):
+        """Final render once a pipeline completes: prefer the native CSV
+        preview, fall back to the pipeline's saved PNG chart."""
+        self._register_csvs()
+        if csv_path and Path(csv_path).exists() \
+                and self._render_csv_preview(csv_path, announce=True):
+            return
+        if fallback_png and Path(fallback_png).exists():
+            try:
+                self.fig.clear()
+                ax = self.fig.add_subplot(111)
+                img = matplotlib.image.imread(str(fallback_png))
+                ax.imshow(img)
+                ax.axis("off")
+                if title:
+                    ax.set_title(title)
+                self.canvas.draw_idle()
+            except Exception as e:
+                self._log(f"(chart preview failed: {e!r})")
 
     def _build_status_panel(self, parent) -> ttk.LabelFrame:
         status_frame = ttk.LabelFrame(parent, text="Status", padding=6)
@@ -526,10 +674,10 @@ class QCCBGui:
         ax.grid(True, axis="y", alpha=0.3)
         ax.text(0.5, 0.55, "Run an experiment to see results",
                 transform=ax.transAxes, ha="center", va="center",
-                fontsize=13, color=PALETTE["text_muted"])
-        ax.text(0.5, 0.42, "▶  pick an experiment + backend on the left",
+                fontsize=15, color=PALETTE["text_muted"])
+        ax.text(0.5, 0.42, "pick an experiment + backend on the left",
                 transform=ax.transAxes, ha="center", va="center",
-                fontsize=10, color=PALETTE["text_muted"])
+                fontsize=12, color=PALETTE["text_muted"])
 
     def _on_experiment_change(self):
         exp = self.experiment_by_key[self.experiment_var.get()]
@@ -571,6 +719,7 @@ class QCCBGui:
             with suppress(Exception):
                 from src.experiments.runner import reset_cancel
                 reset_cancel()
+            self._start_preview_watch()
         else:
             self._stop_overall()
 
@@ -1533,109 +1682,72 @@ class QCCBGui:
         self._log("\n=== PQC suite complete ===")
         for k, p in paths.items():
             self._log(f"  ✓ {p}")
+        self._set_out_dir(paths.get("out_dir"))
         self.metric_lbl.config(text=f"PQC artifacts: {paths.get('out_dir', '')}")
         self.verdict_lbl.config(text=(
             "Kyber/Dilithium/SPHINCS+ benchmarks vs RSA/ECC baselines, "
             "hybrid-scheme overhead, classical SCI table, threat matrix, "
-            "and 5-phase migration roadmap — all in results/1_pqc_benchmarks/."
+            "and 5-phase migration roadmap — all in results/1_pqc_benchmarks/. "
+            "Use the CSV picker above to flip through every table."
         ))
-        with suppress(OSError, KeyError):
-            import os
-            if sys.platform == "win32" and "out_dir" in paths:
-                os.startfile(str(paths["out_dir"]))
+        primary = (paths.get("pqc_benchmarks.csv")
+                   or paths.get("comparative_analysis.csv"))
+        self._finish_preview(primary)
 
     def _render_crm(self, paths: dict):
         self._log("\n=== CRM forecast complete ===")
         for k, p in paths.items():
             self._log(f"  ✓ {p}")
 
-        chart = paths.get("crm_chart")
-        if chart and Path(chart).exists():
-            try:
-                self.fig.clear()
-                ax = self.fig.add_subplot(111)
-                img = matplotlib.image.imread(str(chart))
-                ax.imshow(img)
-                ax.axis("off")
-                ax.set_title("CRM forecast: NISQ cryptanalysis vs RSA-2048")
-                self.canvas.draw_idle()
-            except Exception as e:
-                self._log(f"(chart preview failed: {e!r})")
-
+        if paths.get("crm_md"):
+            self._set_out_dir(Path(paths["crm_md"]).parent)
         self.metric_lbl.config(text=f"CRM artifacts: {paths.get('crm_md')}")
         self.verdict_lbl.config(text=(
             "CRM = chip-specific cryptanalytic benchmark. The forecast chart "
             "shows where the NISQ→RSA-2048 boundary will likely cross."
         ))
-        with suppress(OSError, KeyError):
-            import os
-            if sys.platform == "win32":
-                os.startfile(str(Path(paths["crm_md"]).parent))
+        self._finish_preview(
+            paths.get("crm_csv"), fallback_png=paths.get("crm_chart"),
+            title="CRM forecast: NISQ cryptanalysis vs RSA-2048")
 
     def _render_scaling(self, paths: dict):
         self._log("\n=== Scaling demo done ===")
         for k, p in paths.items():
             self._log(f"  ✓ {p}")
 
-        chart = paths.get("chart")
-        if chart and Path(chart).exists():
-            try:
-                self.fig.clear()
-                ax = self.fig.add_subplot(111)
-                img = matplotlib.image.imread(str(chart))
-                ax.imshow(img)
-                ax.axis("off")
-                ax.set_title("GHZ-N scaling: CPU vs GPU vs Snowdrop chip")
-                self.canvas.draw_idle()
-            except Exception as e:
-                self._log(f"(chart preview failed: {e!r})")
-
+        if paths.get("chart"):
+            self._set_out_dir(Path(paths["chart"]).parent)
         self.metric_lbl.config(text=f"Scaling chart saved: {paths.get('chart')}")
         self.verdict_lbl.config(text=(
             "Compare with Snowdrop's 4-qubit ceiling. The cross-over point shows "
             "where GPU starts beating CPU and where both go beyond NISQ hardware."
         ))
-        with suppress(OSError, KeyError):
-            import os
-            if sys.platform == "win32":
-                os.startfile(str(Path(paths["chart"]).parent))
+        self._finish_preview(
+            paths.get("csv"), fallback_png=paths.get("chart"),
+            title="GHZ-N scaling: CPU vs GPU vs Snowdrop chip")
 
     def _render_full_suite(self, artifacts: dict):
-        from PIL import Image, ImageTk
-
         self._log("\n=== Full benchmark complete. Artifacts: ===")
         for name, p in artifacts.items():
             self._log(f"  ✓ {p}")
 
-        chart = artifacts.get("fidelity_chart")
-        if chart and Path(chart).exists():
-            try:
-                self.fig.clear()
-                ax = self.fig.add_subplot(111)
-                img = matplotlib.image.imread(str(chart))
-                ax.imshow(img)
-                ax.axis("off")
-                ax.set_title("Full benchmark suite — fidelity comparison")
-                self.canvas.draw_idle()
-            except Exception as e:
-                self._log(f"(chart preview failed: {e!r})")
-
         report = artifacts.get("report_md")
         if report:
+            self._set_out_dir(Path(report).parent)
             self.metric_lbl.config(
                 text=f"Full suite complete. Report: {Path(report).resolve()}"
             )
             self.verdict_lbl.config(
-                text=(f"Open results/quantum/report.md for the full thesis-ready "
-                      f"summary, including SCI_HW table and chip calibration. "
-                      f"All raw data preserved in quantum_hardware_runs.json.")
+                text=(f"Open report.md for the full thesis-ready summary, "
+                      f"including SCI_HW table and chip calibration. All raw "
+                      f"data preserved in quantum_hardware_runs.json. The CSV "
+                      f"picker above flips through every table of this run.")
             )
 
-        with suppress(OSError, KeyError):
-            import os
-            results_dir = Path(artifacts["report_md"]).parent
-            if sys.platform == "win32":
-                os.startfile(str(results_dir))
+        self._finish_preview(
+            artifacts.get("summary_csv"),
+            fallback_png=artifacts.get("fidelity_chart"),
+            title="Full benchmark suite — fidelity comparison")
 
     def _render_benchmark(self, exp: ExperimentDef, params: dict,
                           bench: BenchmarkResult):
@@ -1674,10 +1786,14 @@ class QCCBGui:
         ax.set_xticks(x)
         ax.set_xticklabels(keys, rotation=0)
         ax.set_ylim(0, max(1.0, max(observed + ideal) * 1.15))
-        ax.set_xlabel("Outcome (bitstring)")
-        ax.set_ylabel("Probability")
-        ax.set_title(f"{exp.title_with_params(params)} — {res.backend}")
-        ax.legend(loc="upper right")
+        # Explicit projector-friendly sizes: global rcParams stay at
+        # publication scale because the pipelines share this process.
+        ax.set_xlabel("Outcome (bitstring)", fontsize=13)
+        ax.set_ylabel("Probability", fontsize=13)
+        ax.set_title(f"{exp.title_with_params(params)} — {res.backend}",
+                     fontsize=15)
+        ax.tick_params(labelsize=12)
+        ax.legend(loc="upper right", fontsize=12)
         ax.grid(True, axis="y", alpha=0.3)
 
     def _draw_three_way(self, exp: ExperimentDef, params: dict, triple: dict):
@@ -1715,10 +1831,12 @@ class QCCBGui:
         ax.set_xticks(x)
         ax.set_xticklabels(keys, rotation=0)
         ax.set_ylim(0, 1.05)
-        ax.set_xlabel("Outcome (bitstring)")
-        ax.set_ylabel("Probability")
-        ax.set_title(f"{exp.title_with_params(params)} — ideal / emulator / real")
-        ax.legend(loc="upper right")
+        ax.set_xlabel("Outcome (bitstring)", fontsize=13)
+        ax.set_ylabel("Probability", fontsize=13)
+        ax.set_title(f"{exp.title_with_params(params)} — ideal / emulator / real",
+                     fontsize=15)
+        ax.tick_params(labelsize=12)
+        ax.legend(loc="upper right", fontsize=12)
         ax.grid(True, axis="y", alpha=0.3)
 
     def _draw_benchmark(self, exp: ExperimentDef, params: dict,
@@ -1737,13 +1855,14 @@ class QCCBGui:
         lo, hi = bench.ci_95
         ax_run.fill_between(runs_x, lo, hi, alpha=0.15,
                             color=CHART_COLORS["gpu"], label=f"95% CI")
-        ax_run.set_xlabel("Run #")
-        ax_run.set_ylabel(exp.metric_name)
-        ax_run.set_title(f"Per-run {exp.metric_name}")
+        ax_run.set_xlabel("Run #", fontsize=11)
+        ax_run.set_ylabel(exp.metric_name, fontsize=11)
+        ax_run.set_title(f"Per-run {exp.metric_name}", fontsize=12)
         ax_run.set_ylim(0, 1.05)
         ax_run.set_xticks(runs_x)
+        ax_run.tick_params(labelsize=10)
         ax_run.grid(True, alpha=0.3)
-        ax_run.legend(loc="lower right", fontsize=9)
+        ax_run.legend(loc="lower right", fontsize=10)
 
         ax_hist = self.fig.add_subplot(gs[0, 1])
         bins = max(5, min(15, bench.repeats // 2 + 2))
@@ -1751,11 +1870,12 @@ class QCCBGui:
                      edgecolor="white")
         ax_hist.axvline(bench.mean, color="#c00", linestyle="--", linewidth=2,
                         label=f"mean")
-        ax_hist.set_xlabel(exp.metric_name)
-        ax_hist.set_ylabel("Count")
-        ax_hist.set_title(f"Distribution (σ = {bench.stdev:.4f})")
+        ax_hist.set_xlabel(exp.metric_name, fontsize=11)
+        ax_hist.set_ylabel("Count", fontsize=11)
+        ax_hist.set_title(f"Distribution (σ = {bench.stdev:.4f})", fontsize=12)
+        ax_hist.tick_params(labelsize=10)
         ax_hist.grid(True, alpha=0.3)
-        ax_hist.legend(loc="upper right", fontsize=9)
+        ax_hist.legend(loc="upper right", fontsize=10)
 
         ax_time = self.fig.add_subplot(gs[0, 2])
         timings = [r.timing for r in bench.runs]
@@ -1771,14 +1891,16 @@ class QCCBGui:
         for b, v in zip(bars, means):
             ax_time.text(b.get_x() + b.get_width()/2, b.get_height() * 1.02,
                          f"{v:.2f}s", ha="center", va="bottom", fontsize=9)
-        ax_time.set_ylabel("Seconds (avg per run)")
-        ax_time.set_title(f"Timing breakdown (total {bench.avg_total_s:.1f}s)")
+        ax_time.set_ylabel("Seconds (avg per run)", fontsize=11)
+        ax_time.set_title(f"Timing breakdown (total {bench.avg_total_s:.1f}s)",
+                          fontsize=12)
+        ax_time.tick_params(labelsize=10)
         ax_time.grid(True, axis="y", alpha=0.3)
 
         self.fig.suptitle(
             f"Benchmark: {exp.title_with_params(params)} on "
             f"{bench.backend} × {bench.repeats}",
-            y=1.02, fontsize=11, fontweight="bold",
+            y=1.02, fontsize=13, fontweight="bold",
         )
 
     def _save_report(self):
@@ -1837,6 +1959,7 @@ class QCCBGui:
 def main():
     root = tk.Tk()
     apply_theme(root)
+    apply_app_icon(root)
     style_matplotlib()
     QCCBGui(root)
     root.mainloop()

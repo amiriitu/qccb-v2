@@ -16,6 +16,7 @@ from __future__ import annotations
 import tkinter as tk
 import tkinter.font as tkfont
 from contextlib import suppress
+from pathlib import Path
 from tkinter import ttk
 
 # --------------------------------------------------------------------- palette
@@ -205,6 +206,30 @@ def apply_theme(root: tk.Misc, base_size: int = _BASE_SIZE) -> ttk.Style:
     return style
 
 
+def apply_app_icon(root: tk.Tk) -> None:
+    """Set the QCCB logo (assets/) as window + taskbar icon.
+
+    iconbitmap(default=...) covers the Windows taskbar; iconphoto with
+    default=True makes every future Toplevel (SCI calculator, thesis
+    tools, dialogs) inherit the same icon. Missing assets are skipped
+    silently so a trimmed checkout still launches.
+    """
+    assets = Path(__file__).resolve().parent.parent / "assets"
+    png = assets / "qccb_icon_256.png"
+    if not png.exists():
+        png = assets / "qccb_icon.png"
+    if png.exists():
+        with suppress(tk.TclError, OSError):
+            img = tk.PhotoImage(file=str(png))
+            root.iconphoto(True, img)
+            root._qccb_icon_img = img  # keep a ref or Tk drops the image
+    # Last so the multi-size ICO wins on the Windows title bar / taskbar.
+    ico = assets / "qccb_icon.ico"
+    if ico.exists():
+        with suppress(tk.TclError, OSError):
+            root.iconbitmap(default=str(ico))
+
+
 def style_console(text_widget: tk.Text, base_size: int = _BASE_SIZE) -> None:
     """Dark terminal look for a tk.Text status feed."""
     text_widget.configure(
@@ -222,6 +247,11 @@ def style_matplotlib() -> None:
     """Match embedded matplotlib charts to the UI palette."""
     import matplotlib as mpl
 
+    # NB: rcParams are process-global and the pipelines (report_v2,
+    # scaling_demo, crm_forecast) save their publication PNGs from this
+    # same process. Keep the global sizes at the values the dissertation
+    # charts were rendered with; projector-sized text is set explicitly
+    # per-element by the embedded GUI charts and src/csv_preview.py.
     mpl.rcParams.update({
         "font.family": "sans-serif",
         "font.sans-serif": ["Segoe UI", "Arial", "DejaVu Sans"],

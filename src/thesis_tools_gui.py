@@ -401,8 +401,9 @@ class ThesisToolsWindow:
 
 def main():
     root = tk.Tk()
-    from src.ui_theme import apply_theme
+    from src.ui_theme import apply_theme, apply_app_icon
     apply_theme(root)
+    apply_app_icon(root)
     ThesisToolsWindow(root)
     root.mainloop()
 

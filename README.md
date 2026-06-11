@@ -17,6 +17,10 @@ QCCB_v2/
 ├── config.yaml                 # statistical/algorithm parameters
 ├── token.env                   # Bauman Octillion API token (gitignored)
 ├── requirements.txt
+├── assets/
+│   ├── QBBC logo.svg           # project logo (vector source)
+│   ├── qccb_icon.ico           # window/taskbar icon (16–256 px)
+│   └── qccb_icon_256.png       # icon raster used by Tk windows
 ├── Bauman/
 │   ├── snowdrop_4q_ver2.json   # live chip calibration snapshot
 │   └── runs/                   # per-job raw counts archive (gitignored)
@@ -54,6 +58,8 @@ QCCB_v2/
 │   ├── crm_metric.py           # CRM definition + per-chip computation
 │   ├── crm_forecast.py         # CRM table for 11 chips + forecast chart
 │   ├── gui.py                  # main Tk GUI
+│   ├── ui_theme.py             # shared palette, ttk styles, app icon
+│   ├── csv_preview.py          # live CSV → chart preview engine for the GUI
 │   └── utils.py                # statistics, hardware detect, I/O helpers
 ├── tools/
 │   └── replot_charts.py        # re-render charts from saved results, no re-run
@@ -141,6 +147,26 @@ Buttons in the main panel:
 - **🔐 CRM forecast** — chip → Shor capability + RSA-2048 forecast
 - **🧮 SCI calculator** — interactive paper-formula and SCI_HW side by side
 - **📦 PQC benchmark suite** — Kyber/Dilithium/RSA/ECC + threat matrix + roadmap
+
+#### Live CSV previews
+
+While any pipeline is running, the *Results* panel follows the CSV files it
+writes and re-draws them as native charts right inside the window — no need
+to open the generated PNGs to see what a run produced. Powered by
+`src/csv_preview.py`, which has a dedicated renderer for every CSV family
+the pipelines emit (PQC timings, fidelity-by-backend, GHZ-N scaling, CRM
+table, SCI tables, chip calibration, …) and a generic chart/table fallback
+for anything else.
+
+- the **Live CSV preview** picker above the chart lists every CSV written
+  since the GUI started; pick one to inspect it
+- **Follow latest** keeps switching to the newest CSV as the run progresses
+  (picking a file manually turns it off)
+- **📂 Open results folder** opens the run's artifact directory on demand —
+  pipelines no longer pop a file-explorer window over the GUI
+- the pipeline-generated PNG charts are unchanged: they are still written
+  to `results/` for the dissertation, and `tools/replot_charts.py` still
+  re-styles them (see below)
 
 ### CLI
 
